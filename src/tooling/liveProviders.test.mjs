@@ -353,3 +353,32 @@ test('military cooldown bounds untrusted Retry-After and defaults server errors'
     assert.equal(Number(result.headers['retry-after']), seconds);
   }
 });
+
+test('aircraft track proxy returns 502 and does not cache oversized upstream response', async (t) => {
+  let fetchCount = 0;
+  t.mock.method(globalThis, 'fetch', async (url) => {
+    fetchCount++;
+    if (url.includes('/token')) {
+      return Response.json({ access_token: 'fixture-token', expires_in: 1800 });
+    }
+    return new Response('track-data', {
+      status: 200,
+      headers: { 'content-length': String(6 * 1024 * 1024) },
+    });
+  });
+
+  const tracks = install(providers.trackBackfillProxies());
+  const res1 = await tracks('/api/opensky-track', '?icao24=a1b2c3');
+  assert.equal(res1.statusCode, 502);
+  const data = JSON.parse(res1.body);
+  assert.equal(data.error, 'Upstream track response too large');
+
+  // Verify failure payload is not cached and subsequent request fetches upstream again
+  const countBeforeSecondCall = fetchCount;
+  const res2 = await tracks('/api/opensky-track', '?icao24=a1b2c3');
+  assert.equal(res2.statusCode, 502);
+  assert.ok(
+    fetchCount > countBeforeSecondCall,
+    'oversized failure response was not cached',
+  );
+});
